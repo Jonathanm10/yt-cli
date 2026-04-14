@@ -7,7 +7,7 @@
    go test ./...
    go build -o ./bin/yt-cli ./cmd/yt-cli
    ```
-2. Review `docs/validation.md` and confirm the hosted-validation status is accurate.
+2. Review `docs/validation.md` and confirm the live-instance validation status is accurate.
 3. Confirm README examples still match the CLI.
 4. Confirm `.gitignore` excludes local artifacts.
 5. Confirm community files exist:
@@ -21,4 +21,4 @@
 
 ## Notes
 
-Until hosted validation is complete, releases should continue to be labeled as **preview**.
+Until live-instance validation is complete, releases should continue to be labeled as **preview**.

@@ -140,7 +140,7 @@ func (a *App) runAuth(ctx context.Context, args []string) error {
 			return output.NewError(2, "validation_error", "base URL is required (use --base-url or YTCLI_BASE_URL)", nil)
 		}
 		if !*tokenStdin {
-			a.printStderr("Opening your hosted YouTrack account page so you can complete SSO and create a permanent token from the Authentication tab.")
+			a.printStderr("Opening your YouTrack account page so you can complete SSO and create a permanent token from the Authentication tab.")
 			a.printStderr("After creating the token in the browser, paste it into the CLI.")
 			if err := a.openBrowser(securityURL(baseURL)); err != nil {
 				a.printStderr("Warning: could not open browser automatically: " + err.Error())

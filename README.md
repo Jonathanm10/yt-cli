@@ -1,8 +1,8 @@
 # yt-cli
 
-`yt-cli` is a standalone CLI for working with hosted YouTrack from the terminal and automation.
+`yt-cli` is a standalone CLI for working with YouTrack from the terminal and automation, whether your instance is on YouTrack Cloud or self-hosted.
 
-> **Status:** public preview. Core local build/test coverage is in place, but live hosted YouTrack validation is still in progress. See [docs/validation.md](docs/validation.md).
+> **Status:** public preview. Core local build/test coverage is in place, but recorded live validation against real YouTrack instances is still in progress. See [docs/validation.md](docs/validation.md).
 
 ## Why this exists
 
@@ -18,7 +18,7 @@ YouTrack is great in the browser, but automation and terminal workflows often ne
 
 ## Current features
 
-- hosted YouTrack profiles with separate local token storage
+- YouTrack profiles with separate local token storage
 - browser-assisted `auth login`
 - non-interactive auth via `--token-stdin` and `YTCLI_TOKEN`
 - versioned JSON output by default
@@ -45,6 +45,8 @@ go build -o ./bin/yt-cli ./cmd/yt-cli
 ```
 
 ## Quickstart
+
+Use your own YouTrack base URL in the examples below. Both YouTrack Cloud URLs such as `https://your-instance.youtrack.cloud` and self-hosted URLs such as `https://youtrack.example.com` are supported.
 
 ### 1. Authenticate
 

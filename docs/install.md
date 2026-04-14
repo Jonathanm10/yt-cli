@@ -30,4 +30,4 @@ export PATH="$HOME/.local/bin:$PATH"
 ## Requirements
 
 - Go 1.26+
-- network access to your hosted YouTrack instance
+- network access to your YouTrack instance

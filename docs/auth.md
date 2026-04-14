@@ -1,6 +1,6 @@
 # Authentication
 
-`yt-cli` uses a hosted-YouTrack-friendly auth flow for the current preview release.
+`yt-cli` uses a base-URL-driven auth flow for the current preview release. It is intended to work with both YouTrack Cloud and self-hosted YouTrack instances.
 
 ## Interactive login
 
@@ -8,7 +8,9 @@
 ./bin/yt-cli auth login --profile sandbox --base-url https://your-instance.youtrack.cloud
 ```
 
-The CLI opens your hosted YouTrack authentication page in the browser so you can complete SSO and create a permanent token. Paste the token into the terminal when prompted.
+The CLI opens your YouTrack authentication page in the browser so you can complete SSO and create a permanent token. Paste the token into the terminal when prompted.
+
+Replace the example URL with your own YouTrack base URL. For example, that may be a YouTrack Cloud URL such as `https://your-instance.youtrack.cloud` or a self-hosted URL such as `https://youtrack.example.com`.
 
 ## Non-interactive login
 
