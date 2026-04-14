@@ -2,8 +2,14 @@
 .codex/*
 !.codex/agents/
 !.codex/agents/**
+!.codex/prompts/
+!.codex/prompts/**
 !.codex/skills/
 !.codex/skills/**
 .codex/skills/.system/**
-!.codex/prompts/
-!.codex/prompts/**
+/bin/
+/yt-cli
+/yt-cli.exe
+/cli.test
+/*.test
+.DS_Store
