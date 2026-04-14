@@ -1,0 +1,82 @@
+name: Release Preview
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  prerelease:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Prepare release metadata
+        id: meta
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          tag="preview-main-r${{ github.event.workflow_run.run_number }}.${{ github.event.workflow_run.run_attempt }}-${short_sha}"
+          title="Main preview r${{ github.event.workflow_run.run_number }}.${{ github.event.workflow_run.run_attempt }} (${short_sha})"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "title=${title}" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_SHA: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Build release archives
+        run: |
+          mkdir -p dist
+
+          build_archive() {
+            local goos="$1"
+            local goarch="$2"
+            local ext="$3"
+            local archive_format="$4"
+            local artifact_dir="dist/yt-cli_${goos}_${goarch}"
+            local binary_name="yt-cli${ext}"
+
+            mkdir -p "${artifact_dir}"
+            GOOS="${goos}" GOARCH="${goarch}" go build -o "${artifact_dir}/${binary_name}" ./cmd/yt-cli
+
+            if [ "${archive_format}" = "zip" ]; then
+              python3 -c 'import pathlib, sys, zipfile; artifact_dir = pathlib.Path(sys.argv[1]); archive_path = pathlib.Path(sys.argv[2]); binary_name = sys.argv[3]; zf = zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED); zf.write(artifact_dir / binary_name, arcname=binary_name); zf.close()' "${artifact_dir}" "dist/yt-cli_${goos}_${goarch}.zip" "${binary_name}"
+            else
+              tar -C "${artifact_dir}" -czf "dist/yt-cli_${goos}_${goarch}.tar.gz" "${binary_name}"
+            fi
+          }
+
+          build_archive linux amd64 "" tar.gz
+          build_archive darwin amd64 "" tar.gz
+          build_archive windows amd64 ".exe" zip
+
+          (
+            cd dist
+            sha256sum *.tar.gz *.zip > SHA256SUMS.txt
+          )
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            dist/*.tar.gz \
+            dist/*.zip \
+            dist/SHA256SUMS.txt \
+            --target "${{ github.event.workflow_run.head_sha }}" \
+            --title "${{ steps.meta.outputs.title }}" \
+            --generate-notes \
+            --prerelease

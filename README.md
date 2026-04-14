@@ -119,6 +119,12 @@ JSON errors:
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 
+## Releases
+
+- Every successful push to `main` publishes an automatic GitHub **prerelease** with generated release notes and attached CLI binaries.
+- These prereleases are intended to show the evolution of `main` and make regressions easier to spot during preview development.
+- Stable semver releases remain a **manual maintainer action** and should only be cut when you want a promoted version.
+
 ## Development
 
 ```bash
