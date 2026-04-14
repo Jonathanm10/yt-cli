@@ -16,7 +16,9 @@ go build -o ./bin/yt-cli ./cmd/yt-cli
 Run it with:
 
 ```bash
-./bin/yt-cli auth status
+./bin/yt-cli --help
+./bin/yt-cli auth --help
+./bin/yt-cli issue create --help
 ```
 
 ## Optional local PATH install

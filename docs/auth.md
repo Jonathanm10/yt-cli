@@ -2,6 +2,13 @@
 
 `yt-cli` uses a base-URL-driven auth flow for the current preview release. It is intended to work with both YouTrack Cloud and self-hosted YouTrack instances.
 
+To inspect auth commands and flags locally:
+
+```bash
+yt-cli auth --help
+yt-cli auth login --help
+```
+
 ## Interactive login
 
 ```bash

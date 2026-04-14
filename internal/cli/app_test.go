@@ -524,3 +524,117 @@ func TestAuthLogoutDeleteProfile(t *testing.T) {
 		t.Fatal("expected sandbox profile to be deleted")
 	}
 }
+
+func TestRootHelp(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	app := NewApp(Options{Stdout: stdout, Stderr: stderr, ConfigDir: t.TempDir()})
+
+	if code := app.Run(context.Background(), []string{"--help"}); code != 0 {
+		t.Fatalf("help failed: code=%d stderr=%s", code, stderr.String())
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "yt-cli - YouTrack CLI for terminal and automation") {
+		t.Fatalf("missing root help header: %s", out)
+	}
+	if !strings.Contains(out, "Use \"yt-cli <command> --help\" for command-specific help.") {
+		t.Fatalf("missing root help guidance: %s", out)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %s", stderr.String())
+	}
+}
+
+func TestCommandHelp(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		snippets []string
+	}{
+		{
+			name: "auth",
+			args: []string{"auth", "--help"},
+			snippets: []string{
+				"yt-cli auth <login|status|logout> [flags]",
+				"yt-cli auth <command> --help",
+			},
+		},
+		{
+			name: "profile",
+			args: []string{"profile", "--help"},
+			snippets: []string{
+				"yt-cli profile <list|use> [flags]",
+				"yt-cli profile use sandbox",
+			},
+		},
+		{
+			name: "project",
+			args: []string{"project", "--help"},
+			snippets: []string{
+				"yt-cli project list [--query TEXT] [flags]",
+				"yt-cli project list --query ops --profile sandbox",
+			},
+		},
+		{
+			name: "issue",
+			args: []string{"issue", "--help"},
+			snippets: []string{
+				"yt-cli issue <view|search|create|update|comment|transition|assign|attach> [flags]",
+				"yt-cli issue <command> --help",
+			},
+		},
+		{
+			name: "workitem",
+			args: []string{"workitem", "--help"},
+			snippets: []string{
+				"yt-cli workitem view ISSUE_ID [flags]",
+				`compatibility alias for "yt-cli issue view"`,
+			},
+		},
+		{
+			name: "issue create leaf",
+			args: []string{"issue", "create", "--help"},
+			snippets: []string{
+				"yt-cli issue create --summary TEXT",
+				"--field NAME=VALUE",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout := &bytes.Buffer{}
+			stderr := &bytes.Buffer{}
+			app := NewApp(Options{Stdout: stdout, Stderr: stderr, ConfigDir: t.TempDir()})
+
+			if code := app.Run(context.Background(), tc.args); code != 0 {
+				t.Fatalf("help failed: code=%d stderr=%s", code, stderr.String())
+			}
+
+			out := stdout.String()
+			for _, snippet := range tc.snippets {
+				if !strings.Contains(out, snippet) {
+					t.Fatalf("expected help output to contain %q, got %s", snippet, out)
+				}
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("expected empty stderr, got %s", stderr.String())
+			}
+		})
+	}
+}
+
+func TestHelpCommand(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	app := NewApp(Options{Stdout: stdout, Stderr: &bytes.Buffer{}, ConfigDir: t.TempDir()})
+
+	if code := app.Run(context.Background(), []string{"help", "issue", "search"}); code != 0 {
+		t.Fatalf("help command failed: %d", code)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "yt-cli issue search --query TEXT") {
+		t.Fatalf("unexpected help output: %s", out)
+	}
+}

@@ -44,6 +44,14 @@ go test ./...
 go build -o ./bin/yt-cli ./cmd/yt-cli
 ```
 
+After install, start with:
+
+```bash
+yt-cli --help
+yt-cli issue --help
+yt-cli issue create --help
+```
+
 ## Quickstart
 
 Use your own YouTrack base URL in the examples below. Both YouTrack Cloud URLs such as `https://your-instance.youtrack.cloud` and self-hosted URLs such as `https://youtrack.example.com` are supported.
@@ -69,6 +77,8 @@ printf '%s' "$YT_TOKEN" | ./bin/yt-cli auth login --profile sandbox --base-url h
 ### 3. Use the CLI
 
 ```bash
+./bin/yt-cli --help
+./bin/yt-cli issue --help
 ./bin/yt-cli project list --profile sandbox
 ./bin/yt-cli issue view ABC-123 --profile sandbox
 ./bin/yt-cli issue search --query 'in:ABC #Unresolved' --top 5 --skip 0 --profile sandbox

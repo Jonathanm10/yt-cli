@@ -94,6 +94,9 @@ func NewApp(opts Options) *App {
 }
 
 func (a *App) Run(ctx context.Context, args []string) int {
+	if a.maybeHandleRootHelp(args) {
+		return 0
+	}
 	if len(args) == 0 {
 		return a.fail(output.NewError(2, "usage_error", "usage: yt-cli <auth|profile|project|issue|workitem> ...", nil), false)
 	}
@@ -123,6 +126,9 @@ func (a *App) run(ctx context.Context, args []string) error {
 }
 
 func (a *App) runAuth(ctx context.Context, args []string) error {
+	if a.maybeHandleCommandHelp("auth", args) {
+		return nil
+	}
 	if len(args) == 0 {
 		return output.NewError(2, "usage_error", "usage: yt-cli auth <login|status|logout>", nil)
 	}
@@ -223,6 +229,9 @@ func (a *App) runAuth(ctx context.Context, args []string) error {
 
 func (a *App) runProfile(ctx context.Context, args []string) error {
 	_ = ctx
+	if a.maybeHandleCommandHelp("profile", args) {
+		return nil
+	}
 	if len(args) == 0 {
 		return output.NewError(2, "usage_error", "usage: yt-cli profile <list|use>", nil)
 	}
@@ -265,6 +274,9 @@ func (a *App) runProfile(ctx context.Context, args []string) error {
 }
 
 func (a *App) runProject(ctx context.Context, args []string) error {
+	if a.maybeHandleCommandHelp("project", args) {
+		return nil
+	}
 	if len(args) == 0 || args[0] != "list" {
 		return output.NewError(2, "usage_error", "usage: yt-cli project list [--query TEXT]", nil)
 	}
@@ -289,6 +301,9 @@ func (a *App) runProject(ctx context.Context, args []string) error {
 }
 
 func (a *App) runIssue(ctx context.Context, args []string) error {
+	if a.maybeHandleCommandHelp("issue", args) {
+		return nil
+	}
 	if len(args) == 0 {
 		return output.NewError(2, "usage_error", "usage: yt-cli issue <view|search|create|update|comment|transition|assign|attach>", nil)
 	}
@@ -501,10 +516,48 @@ func (a *App) runIssue(ctx context.Context, args []string) error {
 }
 
 func (a *App) runWorkItem(ctx context.Context, args []string) error {
+	if a.maybeHandleCommandHelp("workitem", args) {
+		return nil
+	}
 	if len(args) >= 2 && args[0] == "view" {
 		return a.runIssue(ctx, append([]string{"view"}, args[1:]...))
 	}
 	return output.NewError(2, "usage_error", "usage: yt-cli workitem view ISSUE_ID", nil)
+}
+
+func (a *App) maybeHandleRootHelp(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if isHelpFlag(args[0]) {
+		a.printStdout(helpText(nil))
+		return true
+	}
+	if args[0] == "help" {
+		topics := helpTopics(args[1:])
+		if len(topics) > 2 {
+			topics = topics[:2]
+		}
+		a.printStdout(helpText(topics))
+		return true
+	}
+	return false
+}
+
+func (a *App) maybeHandleCommandHelp(command string, args []string) bool {
+	if !hasHelpRequest(args) {
+		return false
+	}
+	path := []string{command}
+	topics := helpTopics(args)
+	if len(topics) > 0 && topics[0] == "help" {
+		topics = topics[1:]
+	}
+	if len(topics) > 0 {
+		path = append(path, topics[0])
+	}
+	a.printStdout(helpText(path))
+	return true
 }
 
 func (a *App) newFlagSet(name string) (*flag.FlagSet, *commonFlags) {
@@ -683,6 +736,15 @@ func contains(values []string, target string) bool {
 	return false
 }
 
+func hasHelpRequest(args []string) bool {
+	for _, arg := range args {
+		if arg == "help" || isHelpFlag(arg) {
+			return true
+		}
+	}
+	return false
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -710,6 +772,24 @@ func normalizeFlagArgs(args []string) []string {
 	return append(flags, positionals...)
 }
 
+func helpTopics(args []string) []string {
+	topics := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if isHelpFlag(arg) {
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			if !strings.Contains(arg, "=") && flagExpectsValue(arg) && i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		topics = append(topics, arg)
+	}
+	return topics
+}
+
 func flagExpectsValue(arg string) bool {
 	switch arg {
 	case "--json-errors", "--debug", "--raw", "--token-stdin":
@@ -719,8 +799,21 @@ func flagExpectsValue(arg string) bool {
 	}
 }
 
+func isHelpFlag(arg string) bool {
+	switch arg {
+	case "-h", "-help", "--help":
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *App) printStderr(message string) {
 	_, _ = fmt.Fprintln(a.stderr, message)
+}
+
+func (a *App) printStdout(message string) {
+	_, _ = fmt.Fprint(a.stdout, message)
 }
 
 func isCharDevice(file *os.File) bool {
