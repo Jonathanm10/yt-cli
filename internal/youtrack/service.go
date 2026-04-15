@@ -2,6 +2,7 @@ package youtrack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"path"
@@ -13,6 +14,7 @@ import (
 
 const issueFields = "id,idReadable,summary,description,project(id,shortName,name),customFields(id,name,$type,value(id,login,name,presentation,text)),attachments(id,name,url),updated"
 const projectFields = "id,shortName,name"
+const projectCustomFieldFields = "id,isPublic,field(name),$type"
 
 type Service struct {
 	client  *httpclient.Client
@@ -36,6 +38,28 @@ type UpdateInput struct {
 	Summary     string
 	Description string
 	Fields      []FieldInput
+}
+
+type projectRef struct {
+	ID        string
+	ShortName string
+}
+
+type projectCustomField struct {
+	Name     string
+	Type     string
+	IsPublic bool
+}
+
+type supportedFieldType struct {
+	IssueType string
+	ValueKey  string
+}
+
+var supportedFieldTypes = map[string]supportedFieldType{
+	"EnumProjectCustomField":  {IssueType: "SingleEnumIssueCustomField", ValueKey: "name"},
+	"StateProjectCustomField": {IssueType: "StateIssueCustomField", ValueKey: "name"},
+	"TextProjectCustomField":  {IssueType: "TextIssueCustomField", ValueKey: "text"},
 }
 
 func NewService(client *httpclient.Client, baseURL string) *Service {
@@ -98,15 +122,23 @@ func (s *Service) SearchIssues(ctx context.Context, queryText string, top, skip 
 }
 
 func (s *Service) CreateIssue(ctx context.Context, in CreateInput) (map[string]any, map[string]any, error) {
-	body := map[string]any{
-		"project": map[string]any{"shortName": in.Project},
-		"summary": in.Summary,
+	body := map[string]any{"summary": in.Summary}
+	if len(in.Fields) > 0 {
+		project, err := s.resolveProjectRef(ctx, in.Project)
+		if err != nil {
+			return nil, nil, err
+		}
+		customFields, err := s.resolveTypedCustomFields(ctx, project, in.Fields)
+		if err != nil {
+			return nil, nil, err
+		}
+		body["project"] = map[string]any{"shortName": project.ShortName}
+		body["customFields"] = customFields
+	} else {
+		body["project"] = map[string]any{"shortName": in.Project}
 	}
 	if strings.TrimSpace(in.Description) != "" {
 		body["description"] = in.Description
-	}
-	if len(in.Fields) > 0 {
-		body["customFields"] = toFieldPayload(in.Fields)
 	}
 	payload, err := s.client.DoJSON(ctx, "POST", "/api/issues", url.Values{"fields": []string{issueFields}}, body)
 	if err != nil {
@@ -125,7 +157,15 @@ func (s *Service) UpdateIssue(ctx context.Context, in UpdateInput) (map[string]a
 		body["description"] = in.Description
 	}
 	if len(in.Fields) > 0 {
-		body["customFields"] = toFieldPayload(in.Fields)
+		project, err := s.resolveIssueProject(ctx, in.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		customFields, err := s.resolveTypedCustomFields(ctx, project, in.Fields)
+		if err != nil {
+			return nil, nil, err
+		}
+		body["customFields"] = customFields
 	}
 	payload, err := s.client.DoJSON(ctx, "POST", "/api/issues/"+url.PathEscape(in.ID), url.Values{"fields": []string{issueFields}}, body)
 	if err != nil {
@@ -313,12 +353,126 @@ func (s *Service) applyCommand(ctx context.Context, issueID, queryText string) (
 	return NormalizeIssue(raw, s.baseURL), raw, nil
 }
 
-func toFieldPayload(fields []FieldInput) []map[string]any {
+func (s *Service) resolveProjectRef(ctx context.Context, project string) (projectRef, error) {
+	query := url.Values{"fields": []string{projectFields}, "query": []string{strings.TrimSpace(project)}}
+	payload, err := s.client.DoJSON(ctx, "GET", "/api/admin/projects", query, nil)
+	if err != nil {
+		return projectRef{}, err
+	}
+	target := normalizeFieldKey(project)
+	for _, item := range asSlice(payload) {
+		raw := asMap(item)
+		shortName := fmt.Sprint(raw["shortName"])
+		id := fmt.Sprint(raw["id"])
+		name := fmt.Sprint(raw["name"])
+		if normalizeFieldKey(shortName) == target || normalizeFieldKey(id) == target || normalizeFieldKey(name) == target {
+			return projectRef{ID: id, ShortName: shortName}, nil
+		}
+	}
+	return projectRef{}, output.NewError(2, "validation_error", fmt.Sprintf("could not resolve project %q for custom-field metadata", strings.TrimSpace(project)), map[string]any{
+		"project": strings.TrimSpace(project),
+		"stage":   "project_resolution",
+	})
+}
+
+func (s *Service) resolveIssueProject(ctx context.Context, issueID string) (projectRef, error) {
+	payload, err := s.client.DoJSON(ctx, "GET", "/api/issues/"+url.PathEscape(issueID), url.Values{"fields": []string{"project(id,shortName,name)"}}, nil)
+	if err != nil {
+		return projectRef{}, err
+	}
+	project := asMap(asMap(payload)["project"])
+	return projectRef{ID: fmt.Sprint(project["id"]), ShortName: fmt.Sprint(project["shortName"])}, nil
+}
+
+func (s *Service) resolveTypedCustomFields(ctx context.Context, project projectRef, fields []FieldInput) ([]map[string]any, error) {
+	metadata, err := s.listProjectCustomFields(ctx, project)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]map[string]any, 0, len(fields))
 	for _, field := range fields {
-		out = append(out, map[string]any{"name": field.Name, "value": field.Value})
+		meta, ok := metadata[normalizeFieldKey(field.Name)]
+		if !ok {
+			return nil, fieldError(field, "metadata_lookup", fmt.Sprintf("custom field %q is not available in project %s or its metadata is not visible", strings.TrimSpace(field.Name), project.ShortNameOrID()), map[string]any{
+				"projectId":        project.ID,
+				"projectShortName": project.ShortName,
+			})
+		}
+		if !meta.IsPublic {
+			return nil, fieldError(field, "metadata_visibility_permission", fmt.Sprintf("custom field %q in project %s requires private-field metadata access", meta.Name, project.ShortNameOrID()), map[string]any{
+				"projectId":        project.ID,
+				"projectShortName": project.ShortName,
+				"fieldType":        meta.Type,
+			})
+		}
+		spec, ok := supportedFieldTypes[meta.Type]
+		if !ok {
+			return nil, fieldError(field, "unsupported_class", fmt.Sprintf("custom field %q uses unsupported project field type %q", meta.Name, meta.Type), map[string]any{
+				"projectId":        project.ID,
+				"projectShortName": project.ShortName,
+				"fieldType":        meta.Type,
+			})
+		}
+		out = append(out, map[string]any{
+			"name":  meta.Name,
+			"$type": spec.IssueType,
+			"value": map[string]any{spec.ValueKey: field.Value},
+		})
 	}
-	return out
+	return out, nil
+}
+
+func (s *Service) listProjectCustomFields(ctx context.Context, project projectRef) (map[string]projectCustomField, error) {
+	payload, err := s.client.DoJSON(ctx, "GET", "/api/admin/projects/"+url.PathEscape(project.ID)+"/customFields", url.Values{"fields": []string{projectCustomFieldFields}}, nil)
+	if err != nil {
+		var responseErr *httpclient.ResponseError
+		if errors.As(err, &responseErr) && (responseErr.StatusCode == 401 || responseErr.StatusCode == 403) {
+			details := map[string]any{
+				"projectId":        project.ID,
+				"projectShortName": project.ShortName,
+				"stage":            "metadata_visibility_permission",
+				"status":           responseErr.StatusCode,
+			}
+			if responseErr.Payload != nil {
+				details["response"] = responseErr.Payload
+			}
+			return nil, output.NewError(2, "metadata_visibility_error", fmt.Sprintf("token cannot read custom-field metadata for project %s", project.ShortNameOrID()), details)
+		}
+		return nil, err
+	}
+	out := make(map[string]projectCustomField, len(asSlice(payload)))
+	for _, item := range asSlice(payload) {
+		raw := asMap(item)
+		field := asMap(raw["field"])
+		name := strings.TrimSpace(fmt.Sprint(field["name"]))
+		if name == "" {
+			continue
+		}
+		out[normalizeFieldKey(name)] = projectCustomField{Name: name, Type: strings.TrimSpace(fmt.Sprint(raw["$type"])), IsPublic: asBool(raw["isPublic"])}
+	}
+	return out, nil
+}
+
+func (p projectRef) ShortNameOrID() string {
+	if strings.TrimSpace(p.ShortName) != "" && p.ShortName != "<nil>" {
+		return p.ShortName
+	}
+	return strings.TrimSpace(p.ID)
+}
+
+func fieldError(field FieldInput, stage, message string, extra map[string]any) error {
+	details := map[string]any{"field": strings.TrimSpace(field.Name), "value": field.Value, "stage": stage}
+	for key, value := range extra {
+		details[key] = value
+	}
+	code := "validation_error"
+	switch stage {
+	case "unsupported_class":
+		code = "unsupported_field_type"
+	case "metadata_lookup", "metadata_visibility_permission":
+		code = "metadata_visibility_error"
+	}
+	return output.NewError(2, code, message, details)
 }
 
 func isFallbackable(err error) bool {
@@ -353,4 +507,15 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeFieldKey(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func asBool(v any) bool {
+	if value, ok := v.(bool); ok {
+		return value
+	}
+	return false
 }

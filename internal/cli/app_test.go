@@ -28,12 +28,18 @@ type fakeIssue struct {
 }
 
 type fakeYouTrack struct {
-	mu               sync.Mutex
-	issues           map[string]*fakeIssue
-	projects         []map[string]any
-	failTypedActions bool
-	attachmentFail   string
-	lastFields       string
+	mu                  sync.Mutex
+	issues              map[string]*fakeIssue
+	projects            []map[string]any
+	projectCustomFields map[string][]map[string]any
+	failTypedActions    bool
+	attachmentFail      string
+	lastFields          string
+	createRequests      int
+	updateRequests      int
+	commandRequests     int
+	lastCreateBody      map[string]any
+	lastUpdateBody      map[string]any
 }
 
 func newFakeYouTrack() *fakeYouTrack {
@@ -48,7 +54,16 @@ func newFakeYouTrack() *fakeYouTrack {
 				},
 			},
 		},
-		projects:         []map[string]any{{"id": "0-0", "shortName": "SP", "name": "Sample Project", "archived": true}},
+		projects: []map[string]any{{"id": "0-0", "shortName": "SP", "name": "Sample Project", "archived": true}},
+		projectCustomFields: map[string][]map[string]any{
+			"0-0": {
+				{"id": "pcf-1", "$type": "EnumProjectCustomField", "isPublic": true, "field": map[string]any{"name": "Type"}},
+				{"id": "pcf-2", "$type": "StateProjectCustomField", "isPublic": true, "field": map[string]any{"name": "State"}},
+				{"id": "pcf-3", "$type": "TextProjectCustomField", "isPublic": true, "field": map[string]any{"name": "Acceptance Criteria"}},
+				{"id": "pcf-4", "$type": "EnumProjectCustomField", "isPublic": true, "field": map[string]any{"name": "Priority"}},
+				{"id": "pcf-5", "$type": "TextProjectCustomField", "isPublic": false, "field": map[string]any{"name": "Hidden Field"}},
+			},
+		},
 		failTypedActions: true,
 		attachmentFail:   "fail.txt",
 	}
@@ -66,6 +81,15 @@ func (f *fakeYouTrack) handler() http.Handler {
 			io.WriteString(w, `{"id":"1-1","login":"agent","name":"Agent User"}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/admin/projects":
 			mustJSON(w, f.projects)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/admin/projects/") && strings.HasSuffix(r.URL.Path, "/customFields"):
+			projectID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/admin/projects/"), "/customFields")
+			fields, ok := f.projectCustomFields[projectID]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"error":"missing"}`)
+				return
+			}
+			mustJSON(w, fields)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/issues":
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -109,7 +133,16 @@ func (f *fakeYouTrack) handleIssueRoutes(w http.ResponseWriter, r *http.Request)
 		}
 		var body map[string]any
 		decodeJSON(r, &body)
+		f.mu.Lock()
+		f.updateRequests++
+		f.lastUpdateBody = cloneMap(body)
+		f.mu.Unlock()
 		customFields, _ := body["customFields"].([]any)
+		if rejectLooseCustomFields(customFields) {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":"Bad Request","error_description":"$type is required"}`)
+			return
+		}
 		if f.failTypedActions && len(customFields) > 0 {
 			names := []string{}
 			for _, item := range customFields {
@@ -178,7 +211,22 @@ func (f *fakeYouTrack) handleIssueRoutes(w http.ResponseWriter, r *http.Request)
 func (f *fakeYouTrack) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	decodeJSON(r, &body)
-	shortName := body["project"].(map[string]any)["shortName"]
+	f.mu.Lock()
+	f.createRequests++
+	f.lastCreateBody = cloneMap(body)
+	f.mu.Unlock()
+	projectBody := body["project"].(map[string]any)
+	shortName := fmt.Sprint(projectBody["shortName"])
+	if shortName == "" || shortName == "<nil>" {
+		projectID := fmt.Sprint(projectBody["id"])
+		shortName = f.projectShortName(projectID)
+	}
+	customFields, _ := body["customFields"].([]any)
+	if rejectLooseCustomFields(customFields) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":"Bad Request","error_description":"$type is required"}`)
+		return
+	}
 	issue := &fakeIssue{
 		ID: "2-99", IDReadable: "SP-999", Summary: fmt.Sprint(body["summary"]), Description: fmt.Sprint(body["description"]),
 		Project:      map[string]any{"id": "0-0", "shortName": shortName, "name": "Sample Project"},
@@ -193,9 +241,21 @@ func (f *fakeYouTrack) handleCreateIssue(w http.ResponseWriter, r *http.Request)
 	mustJSON(w, f.issuePayload(issue))
 }
 
+func (f *fakeYouTrack) projectShortName(projectID string) string {
+	for _, project := range f.projects {
+		if fmt.Sprint(project["id"]) == projectID {
+			return fmt.Sprint(project["shortName"])
+		}
+	}
+	return ""
+}
+
 func (f *fakeYouTrack) handleCommands(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	decodeJSON(r, &body)
+	f.mu.Lock()
+	f.commandRequests++
+	f.mu.Unlock()
 	issues := body["issues"].([]any)
 	issueID := fmt.Sprint(issues[0].(map[string]any)["idReadable"])
 	issue := f.lookupIssue(issueID)
@@ -245,18 +305,19 @@ func mergeCustomFields(existing []map[string]any, updates []any) []map[string]an
 	for _, item := range updates {
 		raw := item.(map[string]any)
 		name := fmt.Sprint(raw["name"])
+		fieldType := firstNonEmpty(fmt.Sprint(raw["$type"]), chooseType(name))
 		replaced := false
 		for i, current := range out {
 			if fmt.Sprint(current["name"]) == name {
 				current["value"] = raw["value"]
-				current["$type"] = chooseType(name)
+				current["$type"] = fieldType
 				out[i] = current
 				replaced = true
 				break
 			}
 		}
 		if !replaced {
-			out = append(out, map[string]any{"id": "cf-" + strings.ToLower(name), "name": name, "$type": chooseType(name), "value": raw["value"]})
+			out = append(out, map[string]any{"id": "cf-" + strings.ToLower(name), "name": name, "$type": fieldType, "value": raw["value"]})
 		}
 	}
 	return out
@@ -264,12 +325,59 @@ func mergeCustomFields(existing []map[string]any, updates []any) []map[string]an
 
 func chooseType(name string) string {
 	switch name {
+	case "Type", "Priority":
+		return "SingleEnumIssueCustomField"
 	case "State":
 		return "StateIssueCustomField"
 	case "Assignee":
 		return "SingleUserIssueCustomField"
+	case "Acceptance Criteria":
+		return "TextIssueCustomField"
 	default:
 		return "SimpleIssueCustomField"
+	}
+}
+
+func rejectLooseCustomFields(customFields []any) bool {
+	for _, item := range customFields {
+		raw, ok := item.(map[string]any)
+		if !ok {
+			return true
+		}
+		if strings.TrimSpace(fmt.Sprint(raw["$type"])) == "" || raw["$type"] == "<nil>" {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneMap(v map[string]any) map[string]any {
+	if v == nil {
+		return nil
+	}
+	out := make(map[string]any, len(v))
+	for k, value := range v {
+		out[k] = cloneValue(value)
+	}
+	return out
+}
+
+func cloneSlice(v []any) []any {
+	out := make([]any, 0, len(v))
+	for _, value := range v {
+		out = append(out, cloneValue(value))
+	}
+	return out
+}
+
+func cloneValue(v any) any {
+	switch value := v.(type) {
+	case map[string]any:
+		return cloneMap(value)
+	case []any:
+		return cloneSlice(value)
+	default:
+		return value
 	}
 }
 
@@ -417,6 +525,161 @@ func TestCreateAttachPartialFailureAndJSONError(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `attach_partial_failure`) || !strings.Contains(stdout.String(), `createdIssue`) {
 		t.Fatalf("unexpected JSON error payload: %s", stdout.String())
+	}
+}
+
+func TestIssueCreateSerializesTypedCustomFields(t *testing.T) {
+	fake := newFakeYouTrack()
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+
+	app := NewApp(Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("valid-token\n"), ConfigDir: t.TempDir(), HTTPClient: server.Client()})
+	app.openBrowser = func(string) error { return nil }
+	if code := app.Run(context.Background(), []string{"auth", "login", "--profile", "sandbox", "--base-url", server.URL, "--token-stdin"}); code != 0 {
+		t.Fatalf("login failed: %d", code)
+	}
+
+	stdout := &bytes.Buffer{}
+	app.stdout = stdout
+	if code := app.Run(context.Background(), []string{
+		"issue", "create",
+		"--profile", "sandbox",
+		"--project", "SP",
+		"--summary", "Typed create",
+		"--field", "Type=User Story",
+		"--field", "State=Backlog",
+		"--field", "Acceptance Criteria=Ship it",
+	}); code != 0 {
+		t.Fatalf("create failed: code=%d stdout=%s", code, stdout.String())
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.createRequests != 1 {
+		t.Fatalf("expected one create request, got %d", fake.createRequests)
+	}
+	customFields, _ := fake.lastCreateBody["customFields"].([]any)
+	if len(customFields) != 3 {
+		t.Fatalf("expected three custom fields, got %#v", fake.lastCreateBody["customFields"])
+	}
+
+	typeField := customFields[0].(map[string]any)
+	if got := fmt.Sprint(typeField["$type"]); got != "SingleEnumIssueCustomField" {
+		t.Fatalf("expected typed enum field, got %q", got)
+	}
+	if got := fmt.Sprint(typeField["value"].(map[string]any)["name"]); got != "User Story" {
+		t.Fatalf("unexpected enum value: %#v", typeField["value"])
+	}
+
+	stateField := customFields[1].(map[string]any)
+	if got := fmt.Sprint(stateField["$type"]); got != "StateIssueCustomField" {
+		t.Fatalf("expected typed state field, got %q", got)
+	}
+	if got := fmt.Sprint(stateField["value"].(map[string]any)["name"]); got != "Backlog" {
+		t.Fatalf("unexpected state value: %#v", stateField["value"])
+	}
+
+	textField := customFields[2].(map[string]any)
+	if got := fmt.Sprint(textField["$type"]); got != "TextIssueCustomField" {
+		t.Fatalf("expected typed text field, got %q", got)
+	}
+	if got := fmt.Sprint(textField["value"].(map[string]any)["text"]); got != "Ship it" {
+		t.Fatalf("unexpected text value: %#v", textField["value"])
+	}
+}
+
+func TestIssueUpdateSerializesTypedCustomFields(t *testing.T) {
+	fake := newFakeYouTrack()
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+
+	app := NewApp(Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("valid-token\n"), ConfigDir: t.TempDir(), HTTPClient: server.Client()})
+	app.openBrowser = func(string) error { return nil }
+	if code := app.Run(context.Background(), []string{"auth", "login", "--profile", "sandbox", "--base-url", server.URL, "--token-stdin"}); code != 0 {
+		t.Fatalf("login failed: %d", code)
+	}
+
+	if code := app.Run(context.Background(), []string{"issue", "update", "SP-123", "--profile", "sandbox", "--field", "Type=User Story", "--field", "Acceptance Criteria=Done"}); code != 0 {
+		t.Fatalf("update failed: %d", code)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.updateRequests != 1 {
+		t.Fatalf("expected one update request, got %d", fake.updateRequests)
+	}
+	customFields, _ := fake.lastUpdateBody["customFields"].([]any)
+	if len(customFields) != 2 {
+		t.Fatalf("expected two custom fields, got %#v", fake.lastUpdateBody["customFields"])
+	}
+	if got := fmt.Sprint(customFields[0].(map[string]any)["$type"]); got != "SingleEnumIssueCustomField" {
+		t.Fatalf("expected typed enum update, got %q", got)
+	}
+	if got := fmt.Sprint(customFields[1].(map[string]any)["$type"]); got != "TextIssueCustomField" {
+		t.Fatalf("expected typed text update, got %q", got)
+	}
+}
+
+func TestIssueCreateFailsBeforeMutationForUnsupportedField(t *testing.T) {
+	fake := newFakeYouTrack()
+	fake.projectCustomFields["0-0"] = append(fake.projectCustomFields["0-0"], map[string]any{
+		"id": "pcf-5", "$type": "UserProjectCustomField", "isPublic": true, "field": map[string]any{"name": "Owner"},
+	})
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+
+	app := NewApp(Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("valid-token\n"), ConfigDir: t.TempDir(), HTTPClient: server.Client()})
+	app.openBrowser = func(string) error { return nil }
+	if code := app.Run(context.Background(), []string{"auth", "login", "--profile", "sandbox", "--base-url", server.URL, "--token-stdin"}); code != 0 {
+		t.Fatalf("login failed: %d", code)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	app.stdout = stdout
+	app.stderr = stderr
+	code := app.Run(context.Background(), []string{"issue", "create", "--profile", "sandbox", "--project", "SP", "--summary", "No mutation", "--field", "Owner=agent", "--json-errors"})
+	if code != 2 {
+		t.Fatalf("expected validation failure, got code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"unsupported_field_type"`) {
+		t.Fatalf("unexpected JSON error output: %s", stdout.String())
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.createRequests != 0 {
+		t.Fatalf("expected zero create mutation requests, got %d", fake.createRequests)
+	}
+}
+
+func TestIssueUpdateFailsBeforeMutationForInvisibleFieldMetadata(t *testing.T) {
+	fake := newFakeYouTrack()
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+
+	app := NewApp(Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("valid-token\n"), ConfigDir: t.TempDir(), HTTPClient: server.Client()})
+	app.openBrowser = func(string) error { return nil }
+	if code := app.Run(context.Background(), []string{"auth", "login", "--profile", "sandbox", "--base-url", server.URL, "--token-stdin"}); code != 0 {
+		t.Fatalf("login failed: %d", code)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	app.stdout = stdout
+	app.stderr = stderr
+	code := app.Run(context.Background(), []string{"issue", "update", "SP-123", "--profile", "sandbox", "--field", "Hidden Field=secret", "--json-errors"})
+	if code != 2 {
+		t.Fatalf("expected metadata visibility failure, got code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"metadata_visibility_error"`) {
+		t.Fatalf("unexpected JSON error output: %s", stdout.String())
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.updateRequests != 0 {
+		t.Fatalf("expected zero update mutation requests, got %d", fake.updateRequests)
 	}
 }
 
