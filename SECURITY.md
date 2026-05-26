@@ -4,7 +4,7 @@
 
 Please do **not** open a public GitHub issue for sensitive security reports.
 
-Instead, contact the maintainers privately through your preferred responsible-disclosure channel.
+Instead, use GitHub private vulnerability reporting from this repository's Security tab.
 
 When reporting a vulnerability, please include:
 - affected command(s)
