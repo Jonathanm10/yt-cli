@@ -3,12 +3,10 @@
 package cli
 
 import (
-	"fmt"
+	"errors"
 	"os"
 )
 
-func setTerminalEcho(file *os.File, enabled bool) error {
-	_ = file
-	_ = enabled
-	return fmt.Errorf("terminal echo control is not implemented on this platform")
+func setTerminalEcho(_ *os.File, _ bool) error {
+	return errors.New("terminal echo control is not implemented on this platform")
 }

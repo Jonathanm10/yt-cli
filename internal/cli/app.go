@@ -10,9 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 
 	"github.com/Jonathanm10/yt-cli/internal/config"
@@ -113,7 +111,7 @@ func (a *App) run(ctx context.Context, args []string) error {
 	case "auth":
 		return a.runAuth(ctx, args[1:])
 	case "profile":
-		return a.runProfile(ctx, args[1:])
+		return a.runProfile(args[1:])
 	case "project":
 		return a.runProject(ctx, args[1:])
 	case "issue":
@@ -227,8 +225,7 @@ func (a *App) runAuth(ctx context.Context, args []string) error {
 	}
 }
 
-func (a *App) runProfile(ctx context.Context, args []string) error {
-	_ = ctx
+func (a *App) runProfile(args []string) error {
 	if a.maybeHandleCommandHelp("profile", args) {
 		return nil
 	}
@@ -846,17 +843,4 @@ func openBrowser(target string) error {
 		cmd = exec.Command("xdg-open", target)
 	}
 	return cmd.Start()
-}
-
-func SortedMapKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func FixturePath(parts ...string) string {
-	return filepath.Join(parts...)
 }

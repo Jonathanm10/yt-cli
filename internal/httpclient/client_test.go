@@ -3,7 +3,6 @@ package httpclient
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +30,7 @@ func TestClientRetriesGetOnServerError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprint(payload.(map[string]any)["ok"]) != "true" {
+	if payload.(map[string]any)["ok"] != true {
 		t.Fatalf("unexpected payload: %#v", payload)
 	}
 	if atomic.LoadInt32(&hits) != 3 {
