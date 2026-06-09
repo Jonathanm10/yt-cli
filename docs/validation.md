@@ -25,6 +25,6 @@ The remaining validation work includes:
 - issue transition
 - issue assign
 
-Current implementation scope for issue create/update custom fields is intentionally narrow: a typed v1 path for `SingleEnumIssueCustomField`, `StateIssueCustomField`, and `TextIssueCustomField`. Broader field classes still need future work, and board workflows or board-targeted issue creation remain out of scope.
+Current implementation scope for issue create/update custom fields is intentionally narrow: a typed v1 path for `SingleEnumIssueCustomField`, `MultiEnumIssueCustomField`, `StateIssueCustomField`, and `TextIssueCustomField`. Multi-value enum fields use repeated `--field NAME=VALUE` flags. Broader field classes still need future work, and board workflows or board-targeted issue creation remain out of scope.
 
 Until that is complete, the repository should be treated as a **public preview** rather than a fully validated general release.

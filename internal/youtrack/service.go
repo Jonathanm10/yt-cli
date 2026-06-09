@@ -14,7 +14,7 @@ import (
 
 const issueFields = "id,idReadable,summary,description,project(id,shortName,name),customFields(id,name,$type,value(id,login,name,presentation,text)),attachments(id,name,url),updated"
 const projectFields = "id,shortName,name"
-const projectCustomFieldFields = "id,isPublic,field(name),$type"
+const projectCustomFieldFields = "id,isPublic,field(name,fieldType(id,presentation)),$type"
 
 type Service struct {
 	client  *httpclient.Client
@@ -46,14 +46,95 @@ type projectRef struct {
 }
 
 type projectCustomField struct {
-	Name     string
-	Type     string
-	IsPublic bool
+	Name        string
+	Type        string
+	FieldTypeID string
+	IsPublic    bool
+}
+
+type issueCreateBody struct {
+	Summary      string                    `json:"summary"`
+	Project      projectBody               `json:"project"`
+	Description  *string                   `json:"description,omitempty"`
+	CustomFields []issueCustomFieldRequest `json:"customFields,omitempty"`
+}
+
+type issueUpdateBody struct {
+	Summary      *string                   `json:"summary,omitempty"`
+	Description  *string                   `json:"description,omitempty"`
+	CustomFields []issueCustomFieldRequest `json:"customFields,omitempty"`
+}
+
+type projectBody struct {
+	ShortName string `json:"shortName"`
+}
+
+type commentBody struct {
+	Text string `json:"text"`
+}
+
+type commandBody struct {
+	Query  string            `json:"query"`
+	Issues []commandIssueRef `json:"issues"`
+}
+
+type commandIssueRef struct {
+	IDReadable string `json:"idReadable"`
+}
+
+type issueCustomFieldRequest struct {
+	Name  string `json:"name"`
+	Type  string `json:"$type,omitempty"`
+	Value any    `json:"value"`
+}
+
+type nameValue struct {
+	Name string `json:"name"`
+}
+
+type textValue struct {
+	Text string `json:"text"`
+}
+
+type loginValue struct {
+	Login string `json:"login"`
+}
+
+type issueModel struct {
+	ID           any
+	IDReadable   any
+	Summary      any
+	Description  any
+	Project      projectModel
+	CustomFields []customFieldModel
+	Attachments  []attachmentModel
+	Updated      any
+	HasUpdated   bool
+}
+
+type projectModel struct {
+	ID        any
+	ShortName any
+	Name      any
+}
+
+type customFieldModel struct {
+	ID    any
+	Name  any
+	Type  string
+	Value any
+}
+
+type attachmentModel struct {
+	ID   any
+	Name any
+	URL  any
 }
 
 type supportedFieldType struct {
 	IssueType string
 	ValueKey  string
+	Multi     bool
 }
 
 var supportedFieldTypes = map[string]supportedFieldType{
@@ -87,12 +168,7 @@ func (s *Service) ListProjects(ctx context.Context, queryText string) ([]map[str
 	items := asSlice(payload)
 	projects := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		raw := asMap(item)
-		projects = append(projects, map[string]any{
-			"id":        raw["id"],
-			"shortName": raw["shortName"],
-			"name":      raw["name"],
-		})
+		projects = append(projects, newProjectModel(item).normalized())
 	}
 	return projects, items, nil
 }
@@ -122,7 +198,7 @@ func (s *Service) SearchIssues(ctx context.Context, queryText string, top, skip 
 }
 
 func (s *Service) CreateIssue(ctx context.Context, in CreateInput) (map[string]any, map[string]any, error) {
-	body := map[string]any{"summary": in.Summary}
+	body := issueCreateBody{Summary: in.Summary, Project: projectBody{ShortName: in.Project}}
 	if len(in.Fields) > 0 {
 		project, err := s.resolveProjectRef(ctx, in.Project)
 		if err != nil {
@@ -132,13 +208,11 @@ func (s *Service) CreateIssue(ctx context.Context, in CreateInput) (map[string]a
 		if err != nil {
 			return nil, nil, err
 		}
-		body["project"] = map[string]any{"shortName": project.ShortName}
-		body["customFields"] = customFields
-	} else {
-		body["project"] = map[string]any{"shortName": in.Project}
+		body.Project = projectBody{ShortName: project.ShortName}
+		body.CustomFields = customFields
 	}
 	if strings.TrimSpace(in.Description) != "" {
-		body["description"] = in.Description
+		body.Description = &in.Description
 	}
 	payload, err := s.client.DoJSON(ctx, "POST", "/api/issues", url.Values{"fields": []string{issueFields}}, body)
 	if err != nil {
@@ -149,12 +223,12 @@ func (s *Service) CreateIssue(ctx context.Context, in CreateInput) (map[string]a
 }
 
 func (s *Service) UpdateIssue(ctx context.Context, in UpdateInput) (map[string]any, map[string]any, error) {
-	body := map[string]any{}
+	body := issueUpdateBody{}
 	if strings.TrimSpace(in.Summary) != "" {
-		body["summary"] = in.Summary
+		body.Summary = &in.Summary
 	}
 	if in.Description != "" {
-		body["description"] = in.Description
+		body.Description = &in.Description
 	}
 	if len(in.Fields) > 0 {
 		project, err := s.resolveIssueProject(ctx, in.ID)
@@ -165,7 +239,7 @@ func (s *Service) UpdateIssue(ctx context.Context, in UpdateInput) (map[string]a
 		if err != nil {
 			return nil, nil, err
 		}
-		body["customFields"] = customFields
+		body.CustomFields = customFields
 	}
 	payload, err := s.client.DoJSON(ctx, "POST", "/api/issues/"+url.PathEscape(in.ID), url.Values{"fields": []string{issueFields}}, body)
 	if err != nil {
@@ -176,7 +250,7 @@ func (s *Service) UpdateIssue(ctx context.Context, in UpdateInput) (map[string]a
 }
 
 func (s *Service) AddComment(ctx context.Context, issueID, text string) (map[string]any, map[string]any, error) {
-	payload, err := s.client.DoJSON(ctx, "POST", "/api/issues/"+url.PathEscape(issueID)+"/comments", url.Values{"fields": []string{"id,text,author(login,name)"}}, map[string]any{"text": text})
+	payload, err := s.client.DoJSON(ctx, "POST", "/api/issues/"+url.PathEscape(issueID)+"/comments", url.Values{"fields": []string{"id,text,author(login,name)"}}, commentBody{Text: text})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -193,7 +267,7 @@ func (s *Service) AddComment(ctx context.Context, issueID, text string) (map[str
 }
 
 func (s *Service) TransitionIssue(ctx context.Context, issueID, state string) (map[string]any, map[string]any, error) {
-	if normalized, raw, err := s.tryTypedAction(ctx, issueID, "State", map[string]any{"name": state}); err == nil {
+	if normalized, raw, err := s.tryTypedAction(ctx, issueID, "State", nameValue{Name: state}); err == nil {
 		return normalized, raw, nil
 	} else if !isFallbackable(err) {
 		return nil, nil, err
@@ -202,7 +276,7 @@ func (s *Service) TransitionIssue(ctx context.Context, issueID, state string) (m
 }
 
 func (s *Service) AssignIssue(ctx context.Context, issueID, user string) (map[string]any, map[string]any, error) {
-	if normalized, raw, err := s.tryTypedAction(ctx, issueID, "Assignee", map[string]any{"login": user}); err == nil {
+	if normalized, raw, err := s.tryTypedAction(ctx, issueID, "Assignee", loginValue{Login: user}); err == nil {
 		return normalized, raw, nil
 	} else if !isFallbackable(err) {
 		return nil, nil, err
@@ -218,12 +292,7 @@ func (s *Service) AttachFiles(ctx context.Context, issueID string, filePaths []s
 	rawItems := asSlice(payload)
 	items := make([]map[string]any, 0, len(rawItems))
 	for _, item := range rawItems {
-		raw := asMap(item)
-		items = append(items, map[string]any{
-			"id":   raw["id"],
-			"name": raw["name"],
-			"url":  raw["url"],
-		})
+		items = append(items, newAttachmentModel(item).normalized())
 	}
 	return map[string]any{"schemaVersion": output.SchemaVersion, "attachments": items}, rawItems, nil
 }
@@ -244,52 +313,109 @@ func resolveIssueFields(fields string) string {
 }
 
 func NormalizeIssue(raw map[string]any, baseURL string) map[string]any {
-	issue := map[string]any{
-		"id":           raw["id"],
-		"idReadable":   raw["idReadable"],
-		"summary":      raw["summary"],
-		"description":  raw["description"],
-		"project":      normalizeProject(raw["project"]),
-		"customFields": normalizeCustomFields(raw["customFields"]),
-		"attachments":  normalizeAttachments(raw["attachments"]),
-		"links": map[string]any{
-			"web": buildIssueURL(baseURL, raw["idReadable"]),
-		},
+	return newIssueModel(raw).normalized(baseURL)
+}
+
+func newIssueModel(raw map[string]any) issueModel {
+	issue := issueModel{
+		ID:           raw["id"],
+		IDReadable:   raw["idReadable"],
+		Summary:      raw["summary"],
+		Description:  raw["description"],
+		Project:      newProjectModel(raw["project"]),
+		CustomFields: newCustomFieldModels(raw["customFields"]),
+		Attachments:  newAttachmentModels(raw["attachments"]),
 	}
 	if raw["updated"] != nil {
-		issue["updated"] = raw["updated"]
+		issue.Updated = raw["updated"]
+		issue.HasUpdated = true
+	}
+	return issue
+}
+
+func (m issueModel) normalized(baseURL string) map[string]any {
+	issue := map[string]any{
+		"id":           m.ID,
+		"idReadable":   m.IDReadable,
+		"summary":      m.Summary,
+		"description":  m.Description,
+		"project":      m.Project.normalized(),
+		"customFields": normalizeCustomFieldModels(m.CustomFields),
+		"attachments":  normalizeAttachmentModels(m.Attachments),
+		"links": map[string]any{
+			"web": buildIssueURL(baseURL, m.IDReadable),
+		},
+	}
+	if m.HasUpdated {
+		issue["updated"] = m.Updated
 	}
 	return map[string]any{"schemaVersion": output.SchemaVersion, "issue": issue}
 }
 
-func normalizeProject(v any) map[string]any {
+func newProjectModel(v any) projectModel {
 	raw := asMap(v)
-	return map[string]any{"id": raw["id"], "shortName": raw["shortName"], "name": raw["name"]}
+	return projectModel{ID: raw["id"], ShortName: raw["shortName"], Name: raw["name"]}
 }
 
-func normalizeCustomFields(v any) []map[string]any {
+func (m projectModel) normalized() map[string]any {
+	return map[string]any{"id": m.ID, "shortName": m.ShortName, "name": m.Name}
+}
+
+func (m projectModel) ref() projectRef {
+	return projectRef{ID: fmt.Sprint(m.ID), ShortName: fmt.Sprint(m.ShortName)}
+}
+
+func newCustomFieldModels(v any) []customFieldModel {
 	items := asSlice(v)
-	out := make([]map[string]any, 0, len(items))
+	out := make([]customFieldModel, 0, len(items))
 	for _, item := range items {
 		raw := asMap(item)
-		out = append(out, map[string]any{
-			"id":    raw["id"],
-			"name":  raw["name"],
-			"type":  firstNonEmpty(fmt.Sprint(raw["$type"]), fmt.Sprint(raw["type"])),
-			"value": normalizeValue(raw["value"]),
+		out = append(out, customFieldModel{
+			ID:    raw["id"],
+			Name:  raw["name"],
+			Type:  firstNonEmpty(fmt.Sprint(raw["$type"]), fmt.Sprint(raw["type"])),
+			Value: raw["value"],
 		})
 	}
 	return out
 }
 
-func normalizeAttachments(v any) []map[string]any {
-	items := asSlice(v)
+func normalizeCustomFieldModels(items []customFieldModel) []map[string]any {
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		raw := asMap(item)
-		out = append(out, map[string]any{"id": raw["id"], "name": raw["name"], "url": raw["url"]})
+		out = append(out, item.normalized())
 	}
 	return out
+}
+
+func (m customFieldModel) normalized() map[string]any {
+	return map[string]any{"id": m.ID, "name": m.Name, "type": m.Type, "value": normalizeValue(m.Value)}
+}
+
+func newAttachmentModels(v any) []attachmentModel {
+	items := asSlice(v)
+	out := make([]attachmentModel, 0, len(items))
+	for _, item := range items {
+		out = append(out, newAttachmentModel(item))
+	}
+	return out
+}
+
+func newAttachmentModel(v any) attachmentModel {
+	raw := asMap(v)
+	return attachmentModel{ID: raw["id"], Name: raw["name"], URL: raw["url"]}
+}
+
+func normalizeAttachmentModels(items []attachmentModel) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.normalized())
+	}
+	return out
+}
+
+func (m attachmentModel) normalized() map[string]any {
+	return map[string]any{"id": m.ID, "name": m.Name, "url": m.URL}
 }
 
 func normalizeValue(v any) any {
@@ -331,7 +457,7 @@ func buildIssueURL(baseURL string, id any) string {
 }
 
 func (s *Service) tryTypedAction(ctx context.Context, issueID, fieldName string, value any) (map[string]any, map[string]any, error) {
-	body := map[string]any{"customFields": []map[string]any{{"name": fieldName, "value": value}}}
+	body := issueUpdateBody{CustomFields: []issueCustomFieldRequest{{Name: fieldName, Value: value}}}
 	payload, err := s.client.DoJSON(ctx, "POST", "/api/issues/"+url.PathEscape(issueID), url.Values{"fields": []string{issueFields}}, body)
 	if err != nil {
 		return nil, nil, err
@@ -341,10 +467,7 @@ func (s *Service) tryTypedAction(ctx context.Context, issueID, fieldName string,
 }
 
 func (s *Service) applyCommand(ctx context.Context, issueID, queryText string) (map[string]any, map[string]any, error) {
-	body := map[string]any{
-		"query":  queryText,
-		"issues": []map[string]any{{"idReadable": issueID}},
-	}
+	body := commandBody{Query: queryText, Issues: []commandIssueRef{{IDReadable: issueID}}}
 	payload, err := s.client.DoJSON(ctx, "POST", "/api/commands", url.Values{"fields": []string{issueFields}}, body)
 	if err != nil {
 		return nil, nil, err
@@ -361,10 +484,10 @@ func (s *Service) resolveProjectRef(ctx context.Context, project string) (projec
 	}
 	target := normalizeFieldKey(project)
 	for _, item := range asSlice(payload) {
-		raw := asMap(item)
-		shortName := fmt.Sprint(raw["shortName"])
-		id := fmt.Sprint(raw["id"])
-		name := fmt.Sprint(raw["name"])
+		project := newProjectModel(item)
+		shortName := fmt.Sprint(project.ShortName)
+		id := fmt.Sprint(project.ID)
+		name := fmt.Sprint(project.Name)
 		if normalizeFieldKey(shortName) == target || normalizeFieldKey(id) == target || normalizeFieldKey(name) == target {
 			return projectRef{ID: id, ShortName: shortName}, nil
 		}
@@ -380,18 +503,19 @@ func (s *Service) resolveIssueProject(ctx context.Context, issueID string) (proj
 	if err != nil {
 		return projectRef{}, err
 	}
-	project := asMap(asMap(payload)["project"])
-	return projectRef{ID: fmt.Sprint(project["id"]), ShortName: fmt.Sprint(project["shortName"])}, nil
+	return newProjectModel(asMap(payload)["project"]).ref(), nil
 }
 
-func (s *Service) resolveTypedCustomFields(ctx context.Context, project projectRef, fields []FieldInput) ([]map[string]any, error) {
+func (s *Service) resolveTypedCustomFields(ctx context.Context, project projectRef, fields []FieldInput) ([]issueCustomFieldRequest, error) {
 	metadata, err := s.listProjectCustomFields(ctx, project)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]map[string]any, 0, len(fields))
+	out := make([]issueCustomFieldRequest, 0, len(fields))
+	outByField := map[string]int{}
 	for _, field := range fields {
-		meta, ok := metadata[normalizeFieldKey(field.Name)]
+		fieldKey := normalizeFieldKey(field.Name)
+		meta, ok := metadata[fieldKey]
 		if !ok {
 			return nil, fieldError(field, "metadata_lookup", fmt.Sprintf("custom field %q is not available in project %s or its metadata is not visible", strings.TrimSpace(field.Name), project.ShortNameOrID()), map[string]any{
 				"projectId":        project.ID,
@@ -405,7 +529,7 @@ func (s *Service) resolveTypedCustomFields(ctx context.Context, project projectR
 				"fieldType":        meta.Type,
 			})
 		}
-		spec, ok := supportedFieldTypes[meta.Type]
+		spec, ok := meta.supportedType()
 		if !ok {
 			return nil, fieldError(field, "unsupported_class", fmt.Sprintf("custom field %q uses unsupported project field type %q", meta.Name, meta.Type), map[string]any{
 				"projectId":        project.ID,
@@ -413,11 +537,17 @@ func (s *Service) resolveTypedCustomFields(ctx context.Context, project projectR
 				"fieldType":        meta.Type,
 			})
 		}
-		out = append(out, map[string]any{
-			"name":  meta.Name,
-			"$type": spec.IssueType,
-			"value": map[string]any{spec.ValueKey: field.Value},
-		})
+		if spec.Multi {
+			value := spec.newValue(field.Value)
+			if existing, ok := outByField[fieldKey]; ok {
+				out[existing].Value = append(out[existing].Value.([]any), value)
+			} else {
+				outByField[fieldKey] = len(out)
+				out = append(out, issueCustomFieldRequest{Name: meta.Name, Type: spec.IssueType, Value: []any{value}})
+			}
+			continue
+		}
+		out = append(out, issueCustomFieldRequest{Name: meta.Name, Type: spec.IssueType, Value: spec.newValue(field.Value)})
 	}
 	return out, nil
 }
@@ -442,15 +572,42 @@ func (s *Service) listProjectCustomFields(ctx context.Context, project projectRe
 	}
 	out := make(map[string]projectCustomField, len(asSlice(payload)))
 	for _, item := range asSlice(payload) {
-		raw := asMap(item)
-		field := asMap(raw["field"])
-		name := strings.TrimSpace(fmt.Sprint(field["name"]))
-		if name == "" {
+		field := newProjectCustomField(item)
+		if field.Name == "" {
 			continue
 		}
-		out[normalizeFieldKey(name)] = projectCustomField{Name: name, Type: strings.TrimSpace(fmt.Sprint(raw["$type"])), IsPublic: asBool(raw["isPublic"])}
+		out[normalizeFieldKey(field.Name)] = field
 	}
 	return out, nil
+}
+
+func newProjectCustomField(v any) projectCustomField {
+	raw := asMap(v)
+	field := asMap(raw["field"])
+	fieldType := asMap(field["fieldType"])
+	return projectCustomField{
+		Name:        strings.TrimSpace(fmt.Sprint(field["name"])),
+		Type:        strings.TrimSpace(fmt.Sprint(raw["$type"])),
+		FieldTypeID: firstNonEmpty(strings.TrimSpace(fmt.Sprint(fieldType["id"])), strings.TrimSpace(fmt.Sprint(fieldType["presentation"]))),
+		IsPublic:    asBool(raw["isPublic"]),
+	}
+}
+
+func (f projectCustomField) supportedType() (supportedFieldType, bool) {
+	if f.Type == "EnumProjectCustomField" && normalizeFieldKey(f.FieldTypeID) == "enum[*]" {
+		return supportedFieldType{IssueType: "MultiEnumIssueCustomField", ValueKey: "name", Multi: true}, true
+	}
+	spec, ok := supportedFieldTypes[f.Type]
+	return spec, ok
+}
+
+func (s supportedFieldType) newValue(value string) any {
+	switch s.ValueKey {
+	case "text":
+		return textValue{Text: value}
+	default:
+		return nameValue{Name: value}
+	}
 }
 
 func (p projectRef) ShortNameOrID() string {

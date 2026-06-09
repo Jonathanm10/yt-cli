@@ -10,9 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 
 	"github.com/Jonathanm10/yt-cli/internal/config"
@@ -113,7 +111,7 @@ func (a *App) run(ctx context.Context, args []string) error {
 	case "auth":
 		return a.runAuth(ctx, args[1:])
 	case "profile":
-		return a.runProfile(ctx, args[1:])
+		return a.runProfile(args[1:])
 	case "project":
 		return a.runProject(ctx, args[1:])
 	case "issue":
@@ -137,7 +135,7 @@ func (a *App) runAuth(ctx context.Context, args []string) error {
 		fs, common := a.newFlagSet("auth login")
 		tokenStdin := fs.Bool("token-stdin", false, "read token from stdin")
 		defaultProject := fs.String("default-project", "", "default project")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
+		if err := fs.Parse(normalizeFlagArgs(fs, args[1:])); err != nil {
 			return err
 		}
 		profileName := a.resolveProfileName(common.Profile)
@@ -181,7 +179,7 @@ func (a *App) runAuth(ctx context.Context, args []string) error {
 		}))
 	case "status":
 		fs, common := a.newFlagSet("auth status")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
+		if err := fs.Parse(normalizeFlagArgs(fs, args[1:])); err != nil {
 			return err
 		}
 		resolved, err := a.resolveProfile(common, true)
@@ -206,7 +204,7 @@ func (a *App) runAuth(ctx context.Context, args []string) error {
 	case "logout":
 		fs, common := a.newFlagSet("auth logout")
 		deleteProfile := fs.Bool("delete-profile", false, "delete the profile and its stored token")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
+		if err := fs.Parse(normalizeFlagArgs(fs, args[1:])); err != nil {
 			return err
 		}
 		profileName := a.resolveProfileName(common.Profile)
@@ -227,8 +225,7 @@ func (a *App) runAuth(ctx context.Context, args []string) error {
 	}
 }
 
-func (a *App) runProfile(ctx context.Context, args []string) error {
-	_ = ctx
+func (a *App) runProfile(args []string) error {
 	if a.maybeHandleCommandHelp("profile", args) {
 		return nil
 	}
@@ -238,7 +235,7 @@ func (a *App) runProfile(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "list":
 		fs, common := a.newFlagSet("profile list")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
+		if err := fs.Parse(normalizeFlagArgs(fs, args[1:])); err != nil {
 			return err
 		}
 		profiles, active, err := a.store.ListProfiles()
@@ -258,7 +255,7 @@ func (a *App) runProfile(ctx context.Context, args []string) error {
 		return output.WriteJSON(a.stdout, output.SuccessEnvelope(map[string]any{"items": items, "activeProfile": active, "raw": common.Raw}))
 	case "use":
 		fs, _ := a.newFlagSet("profile use")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
+		if err := fs.Parse(normalizeFlagArgs(fs, args[1:])); err != nil {
 			return err
 		}
 		if fs.NArg() != 1 {
@@ -282,7 +279,7 @@ func (a *App) runProject(ctx context.Context, args []string) error {
 	}
 	fs, common := a.newFlagSet("project list")
 	queryText := fs.String("query", "", "filter projects")
-	if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
+	if err := fs.Parse(normalizeFlagArgs(fs, args[1:])); err != nil {
 		return err
 	}
 	resolved, err := a.resolveProfile(common, true)
@@ -300,231 +297,6 @@ func (a *App) runProject(ctx context.Context, args []string) error {
 	return output.WriteJSON(a.stdout, output.SuccessEnvelope(map[string]any{"items": projects}))
 }
 
-func (a *App) runIssue(ctx context.Context, args []string) error {
-	if a.maybeHandleCommandHelp("issue", args) {
-		return nil
-	}
-	if len(args) == 0 {
-		return output.NewError(2, "usage_error", "usage: yt-cli issue <view|search|create|update|comment|transition|assign|attach>", nil)
-	}
-	switch args[0] {
-	case "view":
-		fs, common := a.newFlagSet("issue view")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
-			return err
-		}
-		if fs.NArg() != 1 {
-			return output.NewError(2, "validation_error", "usage: yt-cli issue view ISSUE_ID", nil)
-		}
-		resolved, err := a.resolveProfile(common, true)
-		if err != nil {
-			return err
-		}
-		service := youtrack.NewService(httpclient.New(resolved.BaseURL, resolved.Token, a.httpClient, common.Debug, a.stderr), resolved.BaseURL)
-		normalized, raw, err := service.ViewIssue(ctx, fs.Arg(0), common.Fields)
-		if err != nil {
-			return mapHTTPError(err)
-		}
-		if common.Raw {
-			return output.WriteJSON(a.stdout, service.RawEnvelope(raw, map[string]any{"command": "issue view", "profile": resolved.Name}))
-		}
-		return output.WriteJSON(a.stdout, normalized)
-	case "search":
-		fs, common := a.newFlagSet("issue search")
-		queryText := fs.String("query", "", "YouTrack query")
-		top := fs.Int("top", 25, "page size")
-		skip := fs.Int("skip", 0, "offset")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
-			return err
-		}
-		if strings.TrimSpace(*queryText) == "" {
-			return output.NewError(2, "validation_error", "--query is required", nil)
-		}
-		resolved, err := a.resolveProfile(common, true)
-		if err != nil {
-			return err
-		}
-		service := youtrack.NewService(httpclient.New(resolved.BaseURL, resolved.Token, a.httpClient, common.Debug, a.stderr), resolved.BaseURL)
-		items, rawItems, hasMore, err := service.SearchIssues(ctx, *queryText, *top, *skip, common.Fields)
-		if err != nil {
-			return mapHTTPError(err)
-		}
-		if common.Raw {
-			return output.WriteJSON(a.stdout, service.RawEnvelope(map[string]any{"items": rawItems, "page": map[string]any{"top": *top, "skip": *skip, "hasMore": hasMore}}, map[string]any{"command": "issue search", "profile": resolved.Name}))
-		}
-		return output.WriteJSON(a.stdout, output.SuccessEnvelope(map[string]any{"items": items, "page": map[string]any{"top": *top, "skip": *skip, "hasMore": hasMore}}))
-	case "create":
-		fs, common := a.newFlagSet("issue create")
-		project := fs.String("project", "", "project short name")
-		summary := fs.String("summary", "", "issue summary")
-		description := fs.String("description", "", "issue description")
-		var fields stringList
-		var attachments stringList
-		fs.Var(&fields, "field", "custom field as Name=Value")
-		fs.Var(&attachments, "attach", "attachment path")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
-			return err
-		}
-		resolved, err := a.resolveProfile(common, true)
-		if err != nil {
-			return err
-		}
-		chosenProject := firstNonEmpty(*project, resolved.DefaultProject)
-		if strings.TrimSpace(chosenProject) == "" {
-			return output.NewError(2, "validation_error", "project is required (use --project or set a default project)", nil)
-		}
-		if strings.TrimSpace(*summary) == "" {
-			return output.NewError(2, "validation_error", "--summary is required", nil)
-		}
-		service := youtrack.NewService(httpclient.New(resolved.BaseURL, resolved.Token, a.httpClient, common.Debug, a.stderr), resolved.BaseURL)
-		normalized, rawIssue, err := service.CreateIssue(ctx, youtrack.CreateInput{Project: chosenProject, Summary: *summary, Description: *description, Fields: parseFields(fields)})
-		if err != nil {
-			return mapHTTPError(err)
-		}
-		rawPayload := map[string]any{"issue": rawIssue}
-		if len(attachments) > 0 {
-			issueID := issueIDFromEnvelope(normalized)
-			attachmentEnvelope, rawAttachments, attachErr := service.AttachFiles(ctx, issueID, attachments)
-			if attachErr != nil {
-				return output.NewError(5, "attach_partial_failure", "issue created but attachment upload failed", map[string]any{"createdIssue": normalized, "cause": attachErr.Error()})
-			}
-			issue := normalized["issue"].(map[string]any)
-			issue["attachments"] = attachmentEnvelope["attachments"]
-			rawPayload["attachments"] = rawAttachments
-		}
-		if common.Raw {
-			return output.WriteJSON(a.stdout, service.RawEnvelope(rawPayload, map[string]any{"command": "issue create", "profile": resolved.Name}))
-		}
-		return output.WriteJSON(a.stdout, normalized)
-	case "update":
-		fs, common := a.newFlagSet("issue update")
-		summary := fs.String("summary", "", "issue summary")
-		description := fs.String("description", "", "issue description")
-		var fields stringList
-		fs.Var(&fields, "field", "custom field as Name=Value")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
-			return err
-		}
-		if fs.NArg() != 1 {
-			return output.NewError(2, "validation_error", "usage: yt-cli issue update ISSUE_ID [flags]", nil)
-		}
-		resolved, err := a.resolveProfile(common, true)
-		if err != nil {
-			return err
-		}
-		service := youtrack.NewService(httpclient.New(resolved.BaseURL, resolved.Token, a.httpClient, common.Debug, a.stderr), resolved.BaseURL)
-		normalized, raw, err := service.UpdateIssue(ctx, youtrack.UpdateInput{ID: fs.Arg(0), Summary: *summary, Description: *description, Fields: parseFields(fields)})
-		if err != nil {
-			return mapHTTPError(err)
-		}
-		if common.Raw {
-			return output.WriteJSON(a.stdout, service.RawEnvelope(raw, map[string]any{"command": "issue update", "profile": resolved.Name}))
-		}
-		return output.WriteJSON(a.stdout, normalized)
-	case "comment":
-		fs, common := a.newFlagSet("issue comment")
-		text := fs.String("text", "", "comment text")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
-			return err
-		}
-		if fs.NArg() != 1 || strings.TrimSpace(*text) == "" {
-			return output.NewError(2, "validation_error", "usage: yt-cli issue comment ISSUE_ID --text '...'", nil)
-		}
-		resolved, err := a.resolveProfile(common, true)
-		if err != nil {
-			return err
-		}
-		service := youtrack.NewService(httpclient.New(resolved.BaseURL, resolved.Token, a.httpClient, common.Debug, a.stderr), resolved.BaseURL)
-		normalized, raw, err := service.AddComment(ctx, fs.Arg(0), *text)
-		if err != nil {
-			return mapHTTPError(err)
-		}
-		if common.Raw {
-			return output.WriteJSON(a.stdout, service.RawEnvelope(raw, map[string]any{"command": "issue comment", "profile": resolved.Name}))
-		}
-		return output.WriteJSON(a.stdout, normalized)
-	case "transition":
-		fs, common := a.newFlagSet("issue transition")
-		state := fs.String("state", "", "target state")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
-			return err
-		}
-		if fs.NArg() != 1 || strings.TrimSpace(*state) == "" {
-			return output.NewError(2, "validation_error", "usage: yt-cli issue transition ISSUE_ID --state '...'", nil)
-		}
-		resolved, err := a.resolveProfile(common, true)
-		if err != nil {
-			return err
-		}
-		service := youtrack.NewService(httpclient.New(resolved.BaseURL, resolved.Token, a.httpClient, common.Debug, a.stderr), resolved.BaseURL)
-		normalized, raw, err := service.TransitionIssue(ctx, fs.Arg(0), *state)
-		if err != nil {
-			return mapHTTPError(err)
-		}
-		if common.Raw {
-			return output.WriteJSON(a.stdout, service.RawEnvelope(raw, map[string]any{"command": "issue transition", "profile": resolved.Name}))
-		}
-		return output.WriteJSON(a.stdout, normalized)
-	case "assign":
-		fs, common := a.newFlagSet("issue assign")
-		user := fs.String("user", "", "assignee login")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
-			return err
-		}
-		if fs.NArg() != 1 || strings.TrimSpace(*user) == "" {
-			return output.NewError(2, "validation_error", "usage: yt-cli issue assign ISSUE_ID --user login", nil)
-		}
-		resolved, err := a.resolveProfile(common, true)
-		if err != nil {
-			return err
-		}
-		service := youtrack.NewService(httpclient.New(resolved.BaseURL, resolved.Token, a.httpClient, common.Debug, a.stderr), resolved.BaseURL)
-		normalized, raw, err := service.AssignIssue(ctx, fs.Arg(0), *user)
-		if err != nil {
-			return mapHTTPError(err)
-		}
-		if common.Raw {
-			return output.WriteJSON(a.stdout, service.RawEnvelope(raw, map[string]any{"command": "issue assign", "profile": resolved.Name}))
-		}
-		return output.WriteJSON(a.stdout, normalized)
-	case "attach":
-		fs, common := a.newFlagSet("issue attach")
-		if err := fs.Parse(normalizeFlagArgs(args[1:])); err != nil {
-			return err
-		}
-		if fs.NArg() < 2 {
-			return output.NewError(2, "validation_error", "usage: yt-cli issue attach ISSUE_ID file1 [file2 ...]", nil)
-		}
-		resolved, err := a.resolveProfile(common, true)
-		if err != nil {
-			return err
-		}
-		issueID := fs.Arg(0)
-		files := fs.Args()[1:]
-		service := youtrack.NewService(httpclient.New(resolved.BaseURL, resolved.Token, a.httpClient, common.Debug, a.stderr), resolved.BaseURL)
-		normalized, raw, err := service.AttachFiles(ctx, issueID, files)
-		if err != nil {
-			return mapHTTPError(err)
-		}
-		if common.Raw {
-			return output.WriteJSON(a.stdout, service.RawEnvelope(raw, map[string]any{"command": "issue attach", "profile": resolved.Name}))
-		}
-		return output.WriteJSON(a.stdout, normalized)
-	default:
-		return output.NewError(2, "usage_error", "usage: yt-cli issue <view|search|create|update|comment|transition|assign|attach>", nil)
-	}
-}
-
-func (a *App) runWorkItem(ctx context.Context, args []string) error {
-	if a.maybeHandleCommandHelp("workitem", args) {
-		return nil
-	}
-	if len(args) >= 2 && args[0] == "view" {
-		return a.runIssue(ctx, append([]string{"view"}, args[1:]...))
-	}
-	return output.NewError(2, "usage_error", "usage: yt-cli workitem view ISSUE_ID", nil)
-}
-
 func (a *App) maybeHandleRootHelp(args []string) bool {
 	if len(args) == 0 {
 		return false
@@ -534,7 +306,7 @@ func (a *App) maybeHandleRootHelp(args []string) bool {
 		return true
 	}
 	if args[0] == "help" {
-		topics := helpTopics(args[1:])
+		topics := a.helpTopics(args[1:], nil)
 		if len(topics) > 2 {
 			topics = topics[:2]
 		}
@@ -549,7 +321,7 @@ func (a *App) maybeHandleCommandHelp(command string, args []string) bool {
 		return false
 	}
 	path := []string{command}
-	topics := helpTopics(args)
+	topics := a.helpTopics(args, path)
 	if len(topics) > 0 && topics[0] == "help" {
 		topics = topics[1:]
 	}
@@ -571,6 +343,82 @@ func (a *App) newFlagSet(name string) (*flag.FlagSet, *commonFlags) {
 	fs.BoolVar(&common.Raw, "raw", false, "emit raw API payload envelope")
 	fs.StringVar(&common.Fields, "fields", "preset", "field preset")
 	return fs, common
+}
+
+func (a *App) helpFlagSet(path []string) *flag.FlagSet {
+	name := commandFlagSetName(path)
+	fs, _ := a.newFlagSet(name)
+	switch name {
+	case "auth login":
+		fs.Bool("token-stdin", false, "read token from stdin")
+		fs.String("default-project", "", "default project")
+	case "auth logout":
+		fs.Bool("delete-profile", false, "delete the profile and its stored token")
+	case "project list":
+		fs.String("query", "", "filter projects")
+	case "issue search":
+		fs.String("query", "", "YouTrack query")
+		fs.Int("top", 25, "page size")
+		fs.Int("skip", 0, "offset")
+	case "issue create":
+		fs.String("project", "", "project short name")
+		fs.String("summary", "", "issue summary")
+		fs.String("description", "", "issue description")
+		var fields stringList
+		var attachments stringList
+		fs.Var(&fields, "field", "custom field as Name=Value")
+		fs.Var(&attachments, "attach", "attachment path")
+	case "issue update":
+		fs.String("summary", "", "issue summary")
+		fs.String("description", "", "issue description")
+		var fields stringList
+		fs.Var(&fields, "field", "custom field as Name=Value")
+	case "issue comment":
+		fs.String("text", "", "comment text")
+	case "issue transition":
+		fs.String("state", "", "target state")
+	case "issue assign":
+		fs.String("user", "", "assignee login")
+	}
+	return fs
+}
+
+func commandFlagSetName(path []string) string {
+	if len(path) == 0 {
+		return ""
+	}
+	switch path[0] {
+	case "auth":
+		if len(path) > 1 {
+			switch path[1] {
+			case "login", "status", "logout":
+				return "auth " + path[1]
+			}
+		}
+	case "profile":
+		if len(path) > 1 {
+			switch path[1] {
+			case "list", "use":
+				return "profile " + path[1]
+			}
+		}
+	case "project":
+		if len(path) > 1 && path[1] == "list" {
+			return "project list"
+		}
+	case "issue":
+		if len(path) > 1 {
+			switch path[1] {
+			case "view", "search", "create", "update", "comment", "transition", "assign", "attach":
+				return "issue " + path[1]
+			}
+		}
+	case "workitem":
+		if len(path) > 1 && path[1] == "view" {
+			return "workitem view"
+		}
+	}
+	return path[0]
 }
 
 func (a *App) resolveProfile(common *commonFlags, requireToken bool) (resolvedProfile, error) {
@@ -693,26 +541,6 @@ func mapHTTPError(err error) error {
 	return err
 }
 
-func parseFields(values []string) []youtrack.FieldInput {
-	out := make([]youtrack.FieldInput, 0, len(values))
-	for _, item := range values {
-		parts := strings.SplitN(item, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		out = append(out, youtrack.FieldInput{Name: strings.TrimSpace(parts[0]), Value: strings.TrimSpace(parts[1])})
-	}
-	return out
-}
-
-func issueIDFromEnvelope(payload map[string]any) string {
-	issue, _ := payload["issue"].(map[string]any)
-	if idReadable := strings.TrimSpace(fmt.Sprint(issue["idReadable"])); idReadable != "" && idReadable != "<nil>" {
-		return idReadable
-	}
-	return strings.TrimSpace(fmt.Sprint(issue["id"]))
-}
-
 func makeEnvMap(values []string) map[string]string {
 	if len(values) == 0 {
 		values = os.Environ()
@@ -754,14 +582,18 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func normalizeFlagArgs(args []string) []string {
+type boolFlag interface {
+	IsBoolFlag() bool
+}
+
+func normalizeFlagArgs(fs *flag.FlagSet, args []string) []string {
 	flags := make([]string, 0, len(args))
 	positionals := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if strings.HasPrefix(arg, "-") {
 			flags = append(flags, arg)
-			if !strings.Contains(arg, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && flagExpectsValue(arg) {
+			if !strings.Contains(arg, "=") && i+1 < len(args) && flagExpectsValue(fs, arg) {
 				flags = append(flags, args[i+1])
 				i++
 			}
@@ -772,15 +604,16 @@ func normalizeFlagArgs(args []string) []string {
 	return append(flags, positionals...)
 }
 
-func helpTopics(args []string) []string {
+func (a *App) helpTopics(args []string, initialPath []string) []string {
 	topics := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if isHelpFlag(arg) {
+		if arg == "help" || isHelpFlag(arg) {
 			continue
 		}
 		if strings.HasPrefix(arg, "-") {
-			if !strings.Contains(arg, "=") && flagExpectsValue(arg) && i+1 < len(args) {
+			path := append(append([]string{}, initialPath...), topics...)
+			if !strings.Contains(arg, "=") && i+1 < len(args) && flagExpectsValue(a.helpFlagSet(path), arg) {
 				i++
 			}
 			continue
@@ -790,13 +623,27 @@ func helpTopics(args []string) []string {
 	return topics
 }
 
-func flagExpectsValue(arg string) bool {
-	switch arg {
-	case "--json-errors", "--debug", "--raw", "--token-stdin":
+func flagExpectsValue(fs *flag.FlagSet, arg string) bool {
+	name := flagName(arg)
+	if name == "" {
 		return false
-	default:
-		return true
 	}
+	registered := fs.Lookup(name)
+	if registered == nil {
+		return false
+	}
+	if value, ok := registered.Value.(boolFlag); ok && value.IsBoolFlag() {
+		return false
+	}
+	return true
+}
+
+func flagName(arg string) string {
+	name := strings.TrimLeft(arg, "-")
+	if beforeValue, _, ok := strings.Cut(name, "="); ok {
+		name = beforeValue
+	}
+	return strings.TrimSpace(name)
 }
 
 func isHelpFlag(arg string) bool {
@@ -846,17 +693,4 @@ func openBrowser(target string) error {
 		cmd = exec.Command("xdg-open", target)
 	}
 	return cmd.Start()
-}
-
-func SortedMapKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func FixturePath(parts ...string) string {
-	return filepath.Join(parts...)
 }

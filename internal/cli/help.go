@@ -258,12 +258,13 @@ Options:
   --project KEY        project short name; falls back to the profile default project
   --summary TEXT       issue summary (required)
   --description TEXT   issue description
-  --field NAME=VALUE   repeatable custom field assignment
+  --field NAME=VALUE   repeatable custom field assignment; repeat the same NAME for multi-value fields
   --attach PATH        repeatable attachment path
 
 Examples:
   yt-cli issue create --project ABC --summary 'Example issue' --description 'Created from yt-cli' --profile sandbox
   yt-cli issue create --summary 'Uses default project' --field Priority=Critical --profile sandbox
+  yt-cli issue create --project ABC --summary 'Android issue' --field Platform=Android --field Platform=iOS --profile sandbox
 `
 }
 
@@ -274,6 +275,7 @@ func issueUpdateHelpText() string {
 Examples:
   yt-cli issue update ABC-123 --summary 'Updated summary' --profile sandbox
   yt-cli issue update ABC-123 --field Priority=Major --field State='In Progress' --profile sandbox
+  yt-cli issue update ABC-123 --field Platform=Android --field Platform=iOS --profile sandbox
 `
 }
 
