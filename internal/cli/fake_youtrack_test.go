@@ -44,6 +44,7 @@ func newFakeYouTrack() *fakeYouTrack {
 				CustomFields: []map[string]any{
 					{"id": "58-1", "name": "Priority", "$type": "SingleEnumIssueCustomField", "value": "Normal"},
 					{"id": "58-2", "name": "State", "$type": "StateIssueCustomField", "value": map[string]any{"name": "Open"}},
+					{"id": "58-3", "name": "Platform", "$type": "MultiEnumIssueCustomField", "value": []any{map[string]any{"name": "Android"}}},
 				},
 			},
 		},
@@ -55,6 +56,7 @@ func newFakeYouTrack() *fakeYouTrack {
 				{"id": "pcf-3", "$type": "TextProjectCustomField", "isPublic": true, "field": map[string]any{"name": "Acceptance Criteria"}},
 				{"id": "pcf-4", "$type": "EnumProjectCustomField", "isPublic": true, "field": map[string]any{"name": "Priority"}},
 				{"id": "pcf-5", "$type": "TextProjectCustomField", "isPublic": false, "field": map[string]any{"name": "Hidden Field"}},
+				{"id": "pcf-6", "$type": "EnumProjectCustomField", "isPublic": true, "field": map[string]any{"name": "Platform", "fieldType": map[string]any{"id": "enum[*]", "presentation": "enum[*]"}}},
 			},
 		},
 		failTypedActions: true,
@@ -320,6 +322,8 @@ func chooseType(name string) string {
 	switch name {
 	case "Type", "Priority":
 		return "SingleEnumIssueCustomField"
+	case "Platform":
+		return "MultiEnumIssueCustomField"
 	case "State":
 		return "StateIssueCustomField"
 	case "Assignee":

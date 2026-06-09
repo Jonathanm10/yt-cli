@@ -23,7 +23,7 @@ YouTrack is great in the browser, but automation and terminal workflows often ne
 - non-interactive auth via `--token-stdin` and `YTCLI_TOKEN`
 - versioned JSON output by default
 - `issue` commands for view/search/create/update/comment/transition/assign/attach
-- narrow typed custom-field support for `issue create`/`issue update` covering `SingleEnumIssueCustomField`, `StateIssueCustomField`, and `TextIssueCustomField`
+- narrow typed custom-field support for `issue create`/`issue update` covering `SingleEnumIssueCustomField`, `MultiEnumIssueCustomField`, `StateIssueCustomField`, and `TextIssueCustomField`
 - `workitem view` compatibility alias for read-only viewing
 - `--raw` escape hatch for upstream-style payloads
 - `--json-errors` for machine-readable failure handling
@@ -97,7 +97,7 @@ Create an issue:
   --description 'Created from yt-cli'
 ```
 
-For custom fields on `issue create` and `issue update`, `yt-cli` currently supports a narrow typed path for `SingleEnumIssueCustomField`, `StateIssueCustomField`, and `TextIssueCustomField`. Broader custom-field classes are still out of scope for this preview, and board targeting is not supported — choose the destination project explicitly.
+For custom fields on `issue create` and `issue update`, `yt-cli` currently supports a narrow typed path for `SingleEnumIssueCustomField`, `MultiEnumIssueCustomField`, `StateIssueCustomField`, and `TextIssueCustomField`. For multi-value enum fields, repeat the same `--field` flag for each value, for example `--field Platform=Android --field Platform=iOS`. Broader custom-field classes are still out of scope for this preview, and board targeting is not supported — choose the destination project explicitly.
 
 Add a comment:
 

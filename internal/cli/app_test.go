@@ -204,6 +204,52 @@ func TestIssueCreateSerializesTypedCustomFields(t *testing.T) {
 	}
 }
 
+func TestIssueCreateSerializesTypedMultiEnumCustomField(t *testing.T) {
+	fake := newFakeYouTrack()
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+
+	app := NewApp(Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("valid-token\n"), ConfigDir: t.TempDir(), HTTPClient: server.Client()})
+	app.openBrowser = func(string) error { return nil }
+	if code := app.Run(context.Background(), []string{"auth", "login", "--profile", "sandbox", "--base-url", server.URL, "--token-stdin"}); code != 0 {
+		t.Fatalf("login failed: %d", code)
+	}
+
+	stdout := &bytes.Buffer{}
+	app.stdout = stdout
+	if code := app.Run(context.Background(), []string{
+		"issue", "create",
+		"--profile", "sandbox",
+		"--project", "SP",
+		"--summary", "Multi enum create",
+		"--field", "Platform=Android",
+		"--field", "Platform=iOS",
+	}); code != 0 {
+		t.Fatalf("create failed: code=%d stdout=%s", code, stdout.String())
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	customFields, _ := fake.lastCreateBody["customFields"].([]any)
+	if len(customFields) != 1 {
+		t.Fatalf("expected one grouped custom field, got %#v", fake.lastCreateBody["customFields"])
+	}
+	platformField := customFields[0].(map[string]any)
+	if got := fmt.Sprint(platformField["$type"]); got != "MultiEnumIssueCustomField" {
+		t.Fatalf("expected typed multi enum field, got %q", got)
+	}
+	values, _ := platformField["value"].([]any)
+	if len(values) != 2 {
+		t.Fatalf("expected two multi enum values, got %#v", platformField["value"])
+	}
+	if got := fmt.Sprint(values[0].(map[string]any)["name"]); got != "Android" {
+		t.Fatalf("unexpected first platform value: %#v", values[0])
+	}
+	if got := fmt.Sprint(values[1].(map[string]any)["name"]); got != "iOS" {
+		t.Fatalf("unexpected second platform value: %#v", values[1])
+	}
+}
+
 func TestIssueUpdateSerializesTypedCustomFields(t *testing.T) {
 	fake := newFakeYouTrack()
 	server := httptest.NewServer(fake.handler())
@@ -233,6 +279,37 @@ func TestIssueUpdateSerializesTypedCustomFields(t *testing.T) {
 	}
 	if got := fmt.Sprint(customFields[1].(map[string]any)["$type"]); got != "TextIssueCustomField" {
 		t.Fatalf("expected typed text update, got %q", got)
+	}
+}
+
+func TestIssueUpdateSerializesTypedMultiEnumCustomField(t *testing.T) {
+	fake := newFakeYouTrack()
+	server := httptest.NewServer(fake.handler())
+	defer server.Close()
+
+	app := NewApp(Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Stdin: strings.NewReader("valid-token\n"), ConfigDir: t.TempDir(), HTTPClient: server.Client()})
+	app.openBrowser = func(string) error { return nil }
+	if code := app.Run(context.Background(), []string{"auth", "login", "--profile", "sandbox", "--base-url", server.URL, "--token-stdin"}); code != 0 {
+		t.Fatalf("login failed: %d", code)
+	}
+
+	if code := app.Run(context.Background(), []string{"issue", "update", "SP-123", "--profile", "sandbox", "--field", "Platform=Android"}); code != 0 {
+		t.Fatalf("update failed: %d", code)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	customFields, _ := fake.lastUpdateBody["customFields"].([]any)
+	if len(customFields) != 1 {
+		t.Fatalf("expected one custom field, got %#v", fake.lastUpdateBody["customFields"])
+	}
+	platformField := customFields[0].(map[string]any)
+	if got := fmt.Sprint(platformField["$type"]); got != "MultiEnumIssueCustomField" {
+		t.Fatalf("expected typed multi enum update, got %q", got)
+	}
+	values, _ := platformField["value"].([]any)
+	if len(values) != 1 || fmt.Sprint(values[0].(map[string]any)["name"]) != "Android" {
+		t.Fatalf("unexpected platform values: %#v", platformField["value"])
 	}
 }
 

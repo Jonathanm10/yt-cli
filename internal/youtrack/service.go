@@ -14,7 +14,7 @@ import (
 
 const issueFields = "id,idReadable,summary,description,project(id,shortName,name),customFields(id,name,$type,value(id,login,name,presentation,text)),attachments(id,name,url),updated"
 const projectFields = "id,shortName,name"
-const projectCustomFieldFields = "id,isPublic,field(name),$type"
+const projectCustomFieldFields = "id,isPublic,field(name,fieldType(id,presentation)),$type"
 
 type Service struct {
 	client  *httpclient.Client
@@ -46,9 +46,10 @@ type projectRef struct {
 }
 
 type projectCustomField struct {
-	Name     string
-	Type     string
-	IsPublic bool
+	Name        string
+	Type        string
+	FieldTypeID string
+	IsPublic    bool
 }
 
 type issueCreateBody struct {
@@ -133,6 +134,7 @@ type attachmentModel struct {
 type supportedFieldType struct {
 	IssueType string
 	ValueKey  string
+	Multi     bool
 }
 
 var supportedFieldTypes = map[string]supportedFieldType{
@@ -510,8 +512,10 @@ func (s *Service) resolveTypedCustomFields(ctx context.Context, project projectR
 		return nil, err
 	}
 	out := make([]issueCustomFieldRequest, 0, len(fields))
+	outByField := map[string]int{}
 	for _, field := range fields {
-		meta, ok := metadata[normalizeFieldKey(field.Name)]
+		fieldKey := normalizeFieldKey(field.Name)
+		meta, ok := metadata[fieldKey]
 		if !ok {
 			return nil, fieldError(field, "metadata_lookup", fmt.Sprintf("custom field %q is not available in project %s or its metadata is not visible", strings.TrimSpace(field.Name), project.ShortNameOrID()), map[string]any{
 				"projectId":        project.ID,
@@ -525,13 +529,23 @@ func (s *Service) resolveTypedCustomFields(ctx context.Context, project projectR
 				"fieldType":        meta.Type,
 			})
 		}
-		spec, ok := supportedFieldTypes[meta.Type]
+		spec, ok := meta.supportedType()
 		if !ok {
 			return nil, fieldError(field, "unsupported_class", fmt.Sprintf("custom field %q uses unsupported project field type %q", meta.Name, meta.Type), map[string]any{
 				"projectId":        project.ID,
 				"projectShortName": project.ShortName,
 				"fieldType":        meta.Type,
 			})
+		}
+		if spec.Multi {
+			value := spec.newValue(field.Value)
+			if existing, ok := outByField[fieldKey]; ok {
+				out[existing].Value = append(out[existing].Value.([]any), value)
+			} else {
+				outByField[fieldKey] = len(out)
+				out = append(out, issueCustomFieldRequest{Name: meta.Name, Type: spec.IssueType, Value: []any{value}})
+			}
+			continue
 		}
 		out = append(out, issueCustomFieldRequest{Name: meta.Name, Type: spec.IssueType, Value: spec.newValue(field.Value)})
 	}
@@ -570,11 +584,21 @@ func (s *Service) listProjectCustomFields(ctx context.Context, project projectRe
 func newProjectCustomField(v any) projectCustomField {
 	raw := asMap(v)
 	field := asMap(raw["field"])
+	fieldType := asMap(field["fieldType"])
 	return projectCustomField{
-		Name:     strings.TrimSpace(fmt.Sprint(field["name"])),
-		Type:     strings.TrimSpace(fmt.Sprint(raw["$type"])),
-		IsPublic: asBool(raw["isPublic"]),
+		Name:        strings.TrimSpace(fmt.Sprint(field["name"])),
+		Type:        strings.TrimSpace(fmt.Sprint(raw["$type"])),
+		FieldTypeID: firstNonEmpty(strings.TrimSpace(fmt.Sprint(fieldType["id"])), strings.TrimSpace(fmt.Sprint(fieldType["presentation"]))),
+		IsPublic:    asBool(raw["isPublic"]),
 	}
+}
+
+func (f projectCustomField) supportedType() (supportedFieldType, bool) {
+	if f.Type == "EnumProjectCustomField" && normalizeFieldKey(f.FieldTypeID) == "enum[*]" {
+		return supportedFieldType{IssueType: "MultiEnumIssueCustomField", ValueKey: "name", Multi: true}, true
+	}
+	spec, ok := supportedFieldTypes[f.Type]
+	return spec, ok
 }
 
 func (s supportedFieldType) newValue(value string) any {
